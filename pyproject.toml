@@ -1,0 +1,20 @@
+[tool.poetry]
+name = "mvp_chat"
+version = "0.1.0"
+description = "Local LLM Chatbot MVP with FastAPI backend and Streamlit frontend"
+authors = ["Your Name <you@example.com>"]
+
+[tool.poetry.dependencies]
+python = ">=3.10,<3.13"
+fastapi = "^0.110.0"
+uvicorn = {extras = ["standard"], version = "^0.29.0"}
+transformers = "^4.41.2"
+accelerate = "^0.30.1"
+streamlit = "^1.35.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.2.2"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
