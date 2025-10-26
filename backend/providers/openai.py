@@ -2,6 +2,7 @@
 from openai import OpenAI
 from .base import ModelProvider
 import logging
+from typing import List, Dict
 
 logger = logging.getLogger(__name__)
 
@@ -31,17 +32,16 @@ class OpenAIModelProvider(ModelProvider):
             logger.error(f"Failed to initialize OpenAI client: {e}")
 
     
-    def generate(self, prompt: str) -> str:
+    def generate(self, messages: List[Dict[str, str]]) -> str:
         """Generate a response using OpenAI API."""
         if not self.is_available():
             return "[OpenAI API not available - check your API key configuration]"
         
         try:
+            openai_messages = [{"role": msg["role"], "content": msg["content"]} for msg in messages]
             response = self._client.chat.completions.create(
                 model=self.model,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ],
+                messages=openai_messages,
                 max_tokens=self.max_tokens,
                 temperature=self.temperature
             )

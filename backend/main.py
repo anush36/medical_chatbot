@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from backend.model import generate, is_model_available
 from backend.config import config
 import logging
+from typing import List
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -14,8 +15,12 @@ app = FastAPI(
     version="0.1.0"
 )
 
+class Message(BaseModel):
+    role: str  # "user" or "assistant"
+    content: str
+
 class ChatRequest(BaseModel):
-    prompt: str
+    messages: List[Message]
 
 class ChatResponse(BaseModel):
     response: str
@@ -43,8 +48,8 @@ def chat_endpoint(request: ChatRequest):
                 status_code=503, 
                 detail=f"Model provider '{config.MODEL_PROVIDER}' is not available. Check your configuration."
             )
-        
-        result = generate(request.prompt)
+        messages_dict = [{"role": msg.role, "content": msg.content} for msg in request.messages]
+        result = generate(messages_dict)
         return ChatResponse(response=result)
     except HTTPException:
         # Re-raise HTTP exceptions
