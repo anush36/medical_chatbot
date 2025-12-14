@@ -48,12 +48,12 @@ def chat_endpoint(request: ChatRequest):
                 status_code=503, 
                 detail=f"Model provider '{config.MODEL_PROVIDER}' is not available. Check your configuration."
             )
-        messages_dict = [{"role": msg.role, "content": msg.content} for msg in request.messages]
-        result = generate(messages_dict)
+        messages = [msg.dict() for msg in request.messages]
+        result = generate(messages)
         return ChatResponse(response=result)
     except HTTPException:
         # Re-raise HTTP exceptions
         raise
     except Exception as e:
-        logger.error(f"Unexpected error in chat endpoint: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Unexpected error in chat endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="An internal error occurred while processing the request.")
