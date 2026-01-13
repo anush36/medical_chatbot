@@ -2,16 +2,17 @@
 from openai import OpenAI
 from .base import ModelProvider
 import logging
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
 class OpenAIModelProvider(ModelProvider):
-    """OpenAI model provider using the OpenAI API."""
+    """OpenAI-compatible model provider (works for OpenAI, vLLM, MedGemma, etc)."""    
     
-    def __init__(self, api_key: str, model: str = "gpt-3.5-turbo", 
+    def __init__(self, api_key: str, base_url: Optional[str] = None, model: str = "gpt-3.5-turbo", 
                  max_tokens: int = 150, temperature: float = 0.7):
         self.api_key = api_key
+        self.base_url = base_url
         self.model = model
         self.max_tokens = max_tokens
         self.temperature = temperature
@@ -25,11 +26,14 @@ class OpenAIModelProvider(ModelProvider):
             return
         
         try:
-            self._client = OpenAI(api_key=self.api_key)
-            print(self.api_key)
-            logger.info("OpenAI client initialized successfully")
+            # Pass the base_url to the client if it exists!
+            self._client = OpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url 
+            )
+            logger.info(f"OpenAI client initialized (URL: {self.base_url or 'Default OpenAI'})")
         except Exception as e:
-            logger.error(f"Failed to initialize OpenAI client: {e}")
+            logger.error(f"Failed to initialize client: {e}")
 
     
     def generate(self, messages: List[Dict[str, str]]) -> str:
