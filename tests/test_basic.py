@@ -14,7 +14,11 @@ def test_health_endpoint():
 def test_chat_endpoint():
     """Test the chat endpoint."""
     url = "http://localhost:8000/chat"
-    data = {"prompt": "Hello!"}
+    data = {
+        "messages": [
+            {"role": "user", "content": "Hello!"}
+        ]
+    }
     resp = requests.post(url, json=data)
     assert resp.status_code == 200
     assert "response" in resp.json()
