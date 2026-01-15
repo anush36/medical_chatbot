@@ -4,3 +4,4 @@
 - uvicorn[standard]
 - transformers
 - accelerate
+- google-auth

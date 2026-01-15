@@ -21,12 +21,11 @@ class OpenAIModelProvider(ModelProvider):
     
     def _initialize_client(self):
         """Initialize the OpenAI client."""
-        if not self.api_key or self.api_key == "your_openai_api_key_here":
-            logger.warning("OpenAI API key not provided or using placeholder value")
-            return
-        
+        # Allow initialization even if key is fake, as Cloud Run might rely on IAM instead
+        if not self.api_key:
+            logger.warning("OpenAI API key not provided")
+            
         try:
-            # Pass the base_url to the client if it exists!
             self._client = OpenAI(
                 api_key=self.api_key,
                 base_url=self.base_url 
@@ -35,6 +34,27 @@ class OpenAIModelProvider(ModelProvider):
         except Exception as e:
             logger.error(f"Failed to initialize client: {e}")
 
+    def _get_gcp_token(self) -> Optional[str]:
+        """Fetch Google ID token if running against Cloud Run."""
+        try:
+            import google.auth
+            import google.auth.transport.requests
+            from google.oauth2 import id_token
+            
+            # Setup the request to fetch the token
+            auth_req = google.auth.transport.requests.Request()
+            # The 'audience' must match the service URL exactly
+            target_audience = self.base_url.split("/v1")[0] if "/v1" in self.base_url else self.base_url
+            
+            token = id_token.fetch_id_token(auth_req, target_audience)
+            return token
+        except ImportError:
+            logger.warning("google-auth library not found. Cannot auto-authenticate with Cloud Run.")
+            return None
+        except Exception as e:
+            # This often happens if you aren't logged in via gcloud
+            logger.debug(f"Could not fetch GCP token (this is normal for standard OpenAI usage): {e}")
+            return None
     
     def generate(self, messages: List[Dict[str, str]]) -> str:
         """Generate a response using OpenAI API."""
@@ -43,12 +63,25 @@ class OpenAIModelProvider(ModelProvider):
         
         try:
             openai_messages = [{"role": msg["role"], "content": msg["content"]} for msg in messages]
-            response = self._client.chat.completions.create(
-                model=self.model,
-                messages=openai_messages,
-                max_tokens=self.max_tokens,
-                temperature=self.temperature
-            )
+            
+            # Prepare arguments
+            request_kwargs = {
+                "model": self.model,
+                "messages": openai_messages,
+                "max_tokens": self.max_tokens,
+                "temperature": self.temperature
+            }
+
+            # AUTO-AUTH: If this is a Cloud Run URL, try to inject a Google Identity Token
+            if self.base_url and "run.app" in self.base_url:
+                token = self._get_gcp_token()
+                if token:
+                    # Inject the token into the headers, overriding the 'fake-key'
+                    request_kwargs["extra_headers"] = {
+                        "Authorization": f"Bearer {token}"
+                    }
+            
+            response = self._client.chat.completions.create(**request_kwargs)
             
             if response.choices and len(response.choices) > 0:
                 return response.choices[0].message.content.strip()
@@ -56,11 +89,9 @@ class OpenAIModelProvider(ModelProvider):
                 return "[No response generated]"
                 
         except Exception as e:
-            logger.error(f"Error generating response with OpenAI: {e}")
-            return f"[OpenAI API error: {e}]"
+            logger.error(f"Error generating response: {e}")
+            return f"[Model Error: {e}]"
     
     def is_available(self) -> bool:
-        """Check if the OpenAI provider is available."""
-        return (self._client is not None and 
-                self.api_key and 
-                self.api_key != "your_openai_api_key_here")
+        """Check if the provider is available."""
+        return self._client is not None

@@ -72,6 +72,14 @@ If you want to run the medical model, you need to deploy the infrastructure firs
 - gcloud CLI installed and authenticated (`gcloud auth application-default login`).
 - Hugging Face Token (Read access) and acceptance of the MedGemma 4B License.
 
+
+To allow your local backend to talk to the private Cloud Run service, you must be authenticated on your machine:
+
+### Step 0: Login with local credentials.
+    ```bash
+    gcloud auth application-default login
+    ```
+
 ### Step 1: Deploy Infrastructure
 
 We use Terraform to spin up a secured, serverless GPU container.

@@ -124,3 +124,16 @@ resource "google_cloud_run_v2_service" "vllm_service" {
 output "api_url" {
   value = google_cloud_run_v2_service.vllm_service.uri
 }
+
+# 1. Get the email of the person running this terraform (You)
+data "google_client_config" "default" {}
+
+# 2. Allow YOU to invoke the service
+resource "google_cloud_run_v2_service_iam_member" "developer_access" {
+  name     = google_cloud_run_v2_service.vllm_service.name
+  location = google_cloud_run_v2_service.vllm_service.location
+  role     = "roles/run.invoker"
+  member   = "user:${data.google_client_config.default.account}"
+  
+  depends_on = [google_cloud_run_v2_service.vllm_service]
+}
