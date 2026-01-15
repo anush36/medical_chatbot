@@ -2,7 +2,6 @@ __pycache__/
 *.pyc
 .env
 .cache
-poetry.lock
 .idea/
 .vscode/
 .DS_Store
