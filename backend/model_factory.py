@@ -16,6 +16,15 @@ def create_model_provider() -> ModelProvider:
             max_tokens=config.OPENAI_MAX_TOKENS,
             temperature=config.OPENAI_TEMPERATURE
         )
+    elif config.MODEL_PROVIDER == "medgemma":
+            logger.info("Creating MedGemma (vLLM) provider")
+            return OpenAIModelProvider(
+                api_key=config.MEDGEMMA_API_KEY,
+                base_url=config.MEDGEMMA_BASE_URL,
+                model=config.MEDGEMMA_MODEL,
+                max_tokens=config.OPENAI_MAX_TOKENS,
+                temperature=config.OPENAI_TEMPERATURE
+            )
     elif config.MODEL_PROVIDER == "local":
         logger.info("Creating local model provider")
         return LocalModelProvider(
