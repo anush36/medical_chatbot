@@ -1,3 +1,6 @@
+⚠️ Project Status: Active Prototype (WIP)
+This project is an exploration of deploying open-weights medical models (MedGemma) on serverless infrastructure. It is currently in active development using AI-accelerated workflows ("vibe-coding") to test rapid iteration cycles.
+
 # Local LLM Chatbot MVP
 
 A flexible chatbot MVP that supports local models, OpenAI, and **self-hosted MedGemma on Google Cloud**.
