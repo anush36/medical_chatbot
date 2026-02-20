@@ -18,11 +18,15 @@ variable "region" {
 variable "model_name" {
   description = "The HuggingFace model ID"
   type        = string
-  # <--- FIXED: The ACTUAL medical model you wanted
   default     = "google/medgemma-4b-it" 
 }
 
 provider "google" {
+  project = var.project_id
+  region  = var.region
+}
+
+provider "google-beta" {
   project = var.project_id
   region  = var.region
 }
@@ -67,22 +71,30 @@ resource "google_secret_manager_secret_iam_member" "secret_access" {
 
 # Cloud Run Service
 resource "google_cloud_run_v2_service" "vllm_service" {
-  name     = "medgemma-service"
-  location = var.region
-  ingress  = "INGRESS_TRAFFIC_ALL"
+  provider             = google-beta  # Essential for GPU features
+  name                 = "medgemma-service"
+  location             = var.region
+  ingress              = "INGRESS_TRAFFIC_ALL"
+  deletion_protection  = false
 
   template {
     service_account = google_service_account.vllm_sa.email
-    
+
+    gpu_zonal_redundancy_disabled = true
+
+    # 2. The Beta way to select GPU
+    node_selector {
+      accelerator = "nvidia-l4"
+    }
+
     scaling {
       max_instance_count = 1
       min_instance_count = 0 
     }
 
     containers {
-      # Use a recent vLLM version to ensure MedGemma support
-
-            image = "vllm/vllm-openai:latest" 
+      image = "vllm/vllm-openai:latest"
+      
       resources {
         limits = {
           cpu    = "4"
@@ -93,11 +105,17 @@ resource "google_cloud_run_v2_service" "vllm_service" {
 
       args = [
         "--model", var.model_name,
-        "--gpu-memory-utilization", "0.90",
-        "--max-model-len", "8192", # MedGemma supports longer context
-        "--trust-remote-code",      # Required for specialized architectures
-        "--dtype", "bfloat16"       # Native precision for Gemma
+        "--gpu-memory-utilization", "0.80",
+        "--max-model-len", "4096",
+        "--trust-remote-code",
+        "--dtype", "bfloat16",
+        "--port", "8080"
       ]
+
+      env {
+        name  = "PYTORCH_CUDA_ALLOC_CONF"
+        value = "expandable_segments:True"
+      }
 
       env {
         name = "HUGGING_FACE_HUB_TOKEN"
@@ -108,12 +126,18 @@ resource "google_cloud_run_v2_service" "vllm_service" {
           }
         }
       }
+
+      startup_probe {
+        tcp_socket {
+          port = 8080
+        }
+        initial_delay_seconds = 60
+        period_seconds        = 10
+        failure_threshold     = 60
+        timeout_seconds       = 5
+      }
     }
-    
-    node_selector = {
-      "run.googleapis.com/accelerator" = "nvidia-l4"
-    }
-    
+
     annotations = {
       "run.googleapis.com/launch-stage" = "BETA"
     }
@@ -125,15 +149,13 @@ output "api_url" {
   value = google_cloud_run_v2_service.vllm_service.uri
 }
 
-# 1. Get the email of the person running this terraform (You)
-data "google_client_config" "default" {}
+data "google_client_openid_userinfo" "me" {}
 
-# 2. Allow YOU to invoke the service
 resource "google_cloud_run_v2_service_iam_member" "developer_access" {
   name     = google_cloud_run_v2_service.vllm_service.name
   location = google_cloud_run_v2_service.vllm_service.location
   role     = "roles/run.invoker"
-  member   = "user:${data.google_client_config.default.account}"
+  member   = "user:${data.google_client_openid_userinfo.me.email}"
   
   depends_on = [google_cloud_run_v2_service.vllm_service]
 }

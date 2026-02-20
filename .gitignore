@@ -5,9 +5,22 @@ __pycache__/
 .idea/
 .vscode/
 .DS_Store
+*.tfvars
+
+# mkdocs
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre
+.pyre/
+
 # Terraform
 .terraform/
 *.tfstate
+*.tfstate.*
 *.tfstate.backup
-*.tfvars
 .terraform.lock.hcl

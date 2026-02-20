@@ -74,10 +74,10 @@ class LocalModelProvider(ModelProvider):
         
         return "\n\n".join(formatted_parts)
 
-    def generate(self,  messages: List[Dict[str, str]]) -> str:
+    def generate(self,  messages: List[Dict[str, str]]) -> Dict[str, str]:
         """Generate a response using the local model."""
         if not self.is_available():
-            return "[Local model not available]"
+            return {"response": "[Local model not available]", "finish_reason": "error"}
         
         try:
             formatted_prompt = self._format_messages(messages)
@@ -98,15 +98,16 @@ class LocalModelProvider(ModelProvider):
                         response = response_parts[-1].strip()
                         # Clean up any extra formatting
                         response = response.split("\n\nHuman:")[0].strip()
-                        return response if response else "[No response generated]"
-                
-                return "[No response generated]"
+                        if response:
+                            return {"response": response, "finish_reason": "stop"}
+                        
+                return {"response": "[No response generated]", "finish_reason": "error"}
             else:
-                return "[No response generated]"
+                return {"response": "[No response generated]", "finish_reason": "error"}
                 
         except Exception as e:
             logger.error(f"Error generating response with local model: {e}")
-            return f"[Model error: {e}]"
+            return {"response": f"[Model error: {e}]", "finish_reason": "error"}
     
     def is_available(self) -> bool:
         """Check if the local model is available."""

@@ -8,7 +8,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def generate(messages: List[Dict[str, str]]) -> str:
+def generate(messages: List[Dict[str, str]]) -> Dict[str, str]:
     """
     Generate a response for the given list of messages.
     
@@ -20,13 +20,13 @@ def generate(messages: List[Dict[str, str]]) -> str:
         messages: A list of message dictionaries, e.g., [{"role": "user", "content": "Hello"}]
         
     Returns:
-        Generated response string
+        Generated response dictionary with 'response' and 'finish_reason' keys
     """
     try:
         logger.info(f"Generating response for {len(messages)} messages.")
-        response = model_provider.generate(messages)
-        logger.info(f"Generated response length: {len(response)}")
-        return response
+        result = model_provider.generate(messages)
+        logger.info(f"Generated response length: {len(result.get('response', ''))}")
+        return result
     except Exception as e:
         logger.error(f"Error during model generation: {e}", exc_info=True)
         # Re-raise the exception to be handled by the API endpoint layer,

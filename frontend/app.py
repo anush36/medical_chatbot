@@ -40,7 +40,12 @@ if st.button("Send") and user_input:
                 
                 resp = requests.post("http://localhost:8000/chat", json={"messages": formatted_messages})
                 if resp.status_code == 200:
-                    answer = resp.json()["response"]
+                    data = resp.json()
+                    answer = data.get("response", "[No response generated]")
+                    finish_reason = data.get("finish_reason", "unknown")
+                    
+                    if finish_reason == "length":
+                        answer += "\n\n*(⚠️ **Note:** This response was cut off because it reached the maximum configured token limit. Consider increasing the `MAX_TOKENS` setting in your backend configuration if you need longer answers.)*"
                 else:
                     answer = f"Error: {resp.text}"
             except Exception as e:

@@ -9,8 +9,8 @@ class ModelProvider(ABC):
     """Abstract base class for model providers."""
     
     @abstractmethod
-    def generate(self, prompt: str) -> str:
-        """Generate a response for the given prompt."""
+    def generate(self, messages: list) -> dict:
+        """Generate a response, returning a dict with 'response' and 'finish_reason' keys."""
         pass
     
     @abstractmethod

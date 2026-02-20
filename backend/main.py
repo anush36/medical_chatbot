@@ -24,6 +24,7 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     response: str
+    finish_reason: str = "unknown"
 
 class HealthResponse(BaseModel):
     status: str
@@ -50,7 +51,10 @@ def chat_endpoint(request: ChatRequest):
             )
         messages = [msg.dict() for msg in request.messages]
         result = generate(messages)
-        return ChatResponse(response=result)
+        return ChatResponse(
+            response=result.get("response", ""),
+            finish_reason=result.get("finish_reason", "unknown")
+        )
     except HTTPException:
         # Re-raise HTTP exceptions
         raise

@@ -38,28 +38,43 @@ class OpenAIModelProvider(ModelProvider):
         """Fetch Google ID token if running against Cloud Run."""
         try:
             import google.auth
-            import google.auth.transport.requests
+            from google.auth.transport.requests import Request
             from google.oauth2 import id_token
             
-            # Setup the request to fetch the token
-            auth_req = google.auth.transport.requests.Request()
-            # The 'audience' must match the service URL exactly
+            # The 'audience' must match the service URL exactly (e.g., https://service-abc.a.run.app)
             target_audience = self.base_url.split("/v1")[0] if "/v1" in self.base_url else self.base_url
             
-            token = id_token.fetch_id_token(auth_req, target_audience)
-            return token
+            try:
+                # 1. Try standard GCP method (works when deployed on Cloud Run / Compute Engine)
+                req = Request()
+                token = id_token.fetch_id_token(req, target_audience)
+                if token:
+                    return token
+            except Exception as e:
+                logger.debug(f"Direct ID token fetch failed (expected if running locally): {e}")
+
+            # 2. Fallback for Local Development (uses gcloud CLI)
+            import subprocess
+            logger.info("Falling back to gcloud CLI for Identity Token...")
+            result = subprocess.run(
+                ["gcloud", "auth", "print-identity-token"],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            return result.stdout.strip()
+            
         except ImportError:
             logger.warning("google-auth library not found. Cannot auto-authenticate with Cloud Run.")
             return None
         except Exception as e:
-            # This often happens if you aren't logged in via gcloud
-            logger.debug(f"Could not fetch GCP token (this is normal for standard OpenAI usage): {e}")
+            logger.error(f"Could not fetch GCP ID token (Auth will fail if endpoint expects it): {e}")
             return None
     
-    def generate(self, messages: List[Dict[str, str]]) -> str:
+    def generate(self, messages: List[Dict[str, str]]) -> Dict[str, str]:
         """Generate a response using OpenAI API."""
         if not self.is_available():
-            return "[OpenAI API not available - check your API key configuration]"
+            return {"response": "[OpenAI API not available - check your API key configuration]", "finish_reason": "error"}
         
         try:
             openai_messages = [{"role": msg["role"], "content": msg["content"]} for msg in messages]
@@ -84,13 +99,17 @@ class OpenAIModelProvider(ModelProvider):
             response = self._client.chat.completions.create(**request_kwargs)
             
             if response.choices and len(response.choices) > 0:
-                return response.choices[0].message.content.strip()
+                choice = response.choices[0]
+                return {
+                    "response": choice.message.content.strip(),
+                    "finish_reason": choice.finish_reason or "unknown"
+                }
             else:
-                return "[No response generated]"
+                return {"response": "[No response generated]", "finish_reason": "error"}
                 
         except Exception as e:
             logger.error(f"Error generating response: {e}")
-            return f"[Model Error: {e}]"
+            return {"response": f"[Model Error: {e}]", "finish_reason": "error"}
     
     def is_available(self) -> bool:
         """Check if the provider is available."""

@@ -1,5 +1,6 @@
 [tool.poetry]
 name = "mvp_chat"
+package-mode = false
 version = "0.1.0"
 description = "Local LLM Chatbot MVP with FastAPI backend and Streamlit frontend"
 authors = ["Your Name <you@example.com>"]
