@@ -3,6 +3,10 @@ import xml.etree.ElementTree as ET
 import logging
 from typing import List, Dict, Any
 from langchain_core.tools import tool
+from langchain_chroma import Chroma
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_core.documents import Document
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +45,8 @@ def get_pmcids_from_query(query: str, max_results: int = 15) -> List[str]:
         logger.error(f"Error fetching PMCIDs from E-utilities: {e}")
         return []
 
-def get_bioc_content(pmcid: str) -> str:
-    """Fetch the BioC JSON content for a specific PMCID and extract text."""
+def get_bioc_content(pmcid: str) -> Dict[str, str]:
+    """Fetch the BioC JSON content for a specific PMCID and extract title and text."""
     url = f"{BIOC_BASE_URL}/{pmcid}/unicode"
     
     try:
@@ -56,6 +60,7 @@ def get_bioc_content(pmcid: str) -> str:
         collections = data if isinstance(data, list) else [data]
         
         extracted_text = []
+        title_text = "Unknown Title"
         target_sections = {"TITLE", "ABSTRACT", "INTRO", "RESULTS", "CONCLUSIONS", "DISCUSSION"}
             
         for collection in collections:
@@ -66,55 +71,90 @@ def get_bioc_content(pmcid: str) -> str:
             for doc in docs:
                 for passage in doc.get("passages", []):
                     section_type = passage.get("infons", {}).get("section_type", "").upper()
+                    if section_type == "TITLE" and "text" in passage:
+                        title_text = passage["text"]
                     if section_type in target_sections or not section_type:
                         if "text" in passage and passage["text"]:
                             extracted_text.append(passage["text"])
                         
         full_text = "\n".join(extracted_text)
         
-        max_chars = 6000
+        # Generous truncation since we are chunking it anyway 
+        max_chars = 25000
         if len(full_text) > max_chars:
             full_text = full_text[:max_chars] + "... [TRUNCATED]"
             
-        return full_text
+        return {"title": title_text, "text": full_text}
         
     except ValueError as e: # JSONDecodeError inherits from ValueError
         logger.warning(f"Invalid JSON received for {pmcid}, possibly not in open access subset: {e}")
-        return ""
+        return {}
     except requests.exceptions.RequestException as e:
         logger.warning(f"Could not fetch BioC data for {pmcid}: {e}")
-        return ""
+        return {}
     except Exception as e:
         logger.error(f"Error parsing BioC data for {pmcid}: {e}")
-        return ""
+        return {}
 
 @tool
 def search_pmc(query: str) -> str:
     """
     Search PubMed Central (PMC) for medical literature.
-    Provides snippets of text from relevant research articles to ground medical claims.
+    Provides highly relevant snippets of text from retrieved research articles to ground medical claims.
     
     Args:
         query: The search terms, e.g., 'acute myeloid leukemia treatments'
     Returns:
-        Summarized text extracts from the top retrieved articles.
+        Summarized text extracts from the top retrieved articles based on semantic similarity.
     """
     logger.info(f"Tool call: search_pmc with query '{query}'")
     
-    pmcids = get_pmcids_from_query(query, max_results=15)
+    # We fetch fewer full articles (top 4) to keep API calls fast, but extract deeper into them
+    pmcids = get_pmcids_from_query(query, max_results=4)
     if not pmcids:
         return f"No articles found for query: {query}"
         
-    combined_texts = []
+    docs = []
+    
+    # 1. Fetch full text and create Document objects
     for pmcid in pmcids:
-        text = get_bioc_content(pmcid)
-        if text:
-            abstract_snippet = f"--- Source: {pmcid} ---\n{text}\n"
-            combined_texts.append(abstract_snippet)
-            if len(combined_texts) >= 3:
-                break
+        content = get_bioc_content(pmcid)
+        if content and content.get("text"):
+            title = content.get("title", "Unknown Title")
+            docs.append(Document(
+                page_content=content["text"],
+                metadata={"source": pmcid, "title": title}
+            ))
             
-    if not combined_texts:
+    if not docs:
         return f"Found articles for '{query}' but could not extract readable text."
+
+    # 2. Semantic Chunking
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=800,
+        chunk_overlap=200,
+        length_function=len
+    )
+    chunks = text_splitter.split_documents(docs)
+    logger.info(f"Split {len(docs)} articles into {len(chunks)} chunks.")
+
+    # 3. Ephemeral Vector Search
+    # Using a fast, lightweight local embedding model
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    
+    # Create temporary in-memory chroma store
+    vectorstore = Chroma.from_documents(chunks, embeddings)
+    
+    # Retrieve top k most relevant chunks (e.g. 5 chunks * 800 chars = ~4000 chars total)
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+    top_chunks = retriever.invoke(query)
+    
+    # 4. Format Output
+    combined_texts = []
+    for chunk in top_chunks:
+        pmcid = chunk.metadata.get("source", "Unknown")
+        title = chunk.metadata.get("title", "Unknown")
+        snippet = f"--- Source: {pmcid} (Title: {title}) ---\n{chunk.page_content}\n"
+        combined_texts.append(snippet)
         
     return "\n".join(combined_texts)

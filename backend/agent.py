@@ -4,7 +4,6 @@ from typing import Annotated, TypedDict, Sequence, Literal, List, Dict
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
-from langgraph.prebuilt import ToolNode, tools_condition
 
 from backend.config import config
 from backend.pmc_tool import search_pmc
@@ -18,99 +17,198 @@ class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], operator.add]
     pmc_queries_count: int
     draft_response: str
+    extracted_claims: List[str]
+    validation_feedback: str
     gathered_literature: Annotated[List[str], operator.add]
+    draft_attempts: int
+    thought_logs: Annotated[List[str], operator.add]
 
 # --- LLM Setup ---
-# Initialize the OpenAI compatible LLM using the current config (this allows hitting local vllm/medgemma too)
-llm = ChatOpenAI(
-    api_key=config.OPENAI_API_KEY if config.MODEL_PROVIDER == "openai" else config.MEDGEMMA_API_KEY,
-    base_url=config.MEDGEMMA_BASE_URL if config.MODEL_PROVIDER != "openai" else None,
-    model=config.OPENAI_MODEL if config.MODEL_PROVIDER == "openai" else config.MEDGEMMA_MODEL,
-    max_tokens=config.OPENAI_MAX_TOKENS,
-    temperature=config.OPENAI_TEMPERATURE
-)
+import time
+import httpx
 
-# Bind the tool to the LLM for the research phase
-tools = [search_pmc]
-llm_with_tools = llm.bind_tools(tools)
+_GCP_TOKEN_CACHE = {"token": None, "expires_at": 0}
 
-# --- Nodes ---
-def researcher_node(state: AgentState):
-    """Decides whether to search for more literature or finalize research."""
-    logger.info("--- RESEARCHER NODE ---")
-    messages = state.get("messages", [])
-    query_count = state.get("pmc_queries_count", 0)
-    
-    # Simple system prompt for the tool-calling researcher
-    sys_msg = SystemMessage(content="""You are a medical researcher. 
-    Your goal is to gather relevant literature from PubMed Central using the `search_pmc` tool to answer the user's latest query.
-    If you feel you have enough information to answer the question, output a final thought summarizing what you found without calling the tool.
-    If you do not have enough info, use the search_pmc tool. DO NOT ATTEMPT TO ANSWER YET. Just gather data.""")
-    
-    # Pass system message + history to LLM
-    response = llm_with_tools.invoke([sys_msg] + list(messages))
-    
-    return {
-        "messages": [response], 
-        "pmc_queries_count": query_count
-    }
+class GCPAuth(httpx.Auth):
+    def __init__(self, base_url: str):
+        self.base_url = base_url
 
-def tool_executor(state: AgentState):
-    """Executes the tool call and updates query count"""
-    logger.info("--- TOOL EXECUTOR NODE ---")
-    # Wrap standard ToolNode lightly just to increment the counter and save the context
-    tool_node = ToolNode(tools)
-    result = tool_node.invoke(state)
-    
-    # Extract just what the tool returned
-    new_messages = result["messages"]
-    gathered = []
-    for msg in new_messages:
-        gathered.append(msg.content)
+    def auth_flow(self, request: httpx.Request):
+        global _GCP_TOKEN_CACHE
+        current_time = time.time()
         
-    return {
-        "messages": new_messages,
-        "pmc_queries_count": state["pmc_queries_count"] + 1,
-        "gathered_literature": gathered
-    }
+        if not _GCP_TOKEN_CACHE["token"] or current_time > _GCP_TOKEN_CACHE["expires_at"]:
+            token = self._fetch_token()
+            if token:
+                _GCP_TOKEN_CACHE["token"] = token
+                _GCP_TOKEN_CACHE["expires_at"] = current_time + 3000
+        
+        if _GCP_TOKEN_CACHE["token"]:
+            request.headers["Authorization"] = f"Bearer {_GCP_TOKEN_CACHE['token']}"
+        yield request
+
+    def _fetch_token(self):
+        try:
+            import google.auth
+            from google.auth.transport.requests import Request
+            from google.oauth2 import id_token
+            
+            target_audience = self.base_url.split("/v1")[0] if "/v1" in self.base_url else self.base_url
+            req = Request()
+            token = id_token.fetch_id_token(req, target_audience)
+            if token:
+                return token
+        except Exception as e:
+            logger.debug(f"Direct ID token fetch failed: {e}")
+
+        try:
+            import subprocess
+            logger.info("Falling back to gcloud CLI for Identity Token...")
+            result = subprocess.run(
+                ["gcloud", "auth", "print-identity-token"],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            return result.stdout.strip()
+        except Exception as e:
+            logger.error(f"Could not fetch GCP ID token: {e}")
+            return None
+
+http_client = None
+if config.MODEL_PROVIDER != "openai" and config.MEDGEMMA_BASE_URL and "run.app" in config.MEDGEMMA_BASE_URL:
+    http_client = httpx.Client(auth=GCPAuth(config.MEDGEMMA_BASE_URL), timeout=60.0)
+
+# Initialize the OpenAI compatible LLM using the current config (this allows hitting local vllm/medgemma too)
+llm_kwargs = {
+    "api_key": config.OPENAI_API_KEY if config.MODEL_PROVIDER == "openai" else config.MEDGEMMA_API_KEY,
+    "model": config.OPENAI_MODEL if config.MODEL_PROVIDER == "openai" else config.MEDGEMMA_MODEL,
+    "max_tokens": config.OPENAI_MAX_TOKENS,
+    "temperature": config.OPENAI_TEMPERATURE,
+}
+
+if config.MODEL_PROVIDER != "openai" and config.MEDGEMMA_BASE_URL:
+    llm_kwargs["base_url"] = config.MEDGEMMA_BASE_URL
+
+if http_client:
+    llm_kwargs["http_client"] = http_client
+
+llm = ChatOpenAI(**llm_kwargs)
 
 def draft_node(state: AgentState):
-    """Drafts the final response to the user based on gathered literature."""
     logger.info("--- DRAFT NODE ---")
-    
     user_msgs = [m for m in state["messages"] if isinstance(m, HumanMessage)]
     last_user_query = user_msgs[-1].content if user_msgs else "No query found."
     
-    literature = "\n\n".join(state.get("gathered_literature", []))
+    feedback = state.get("validation_feedback")
     
-    sys_prompt = f"""You are a helpful medical chatbot. 
-    Your task is to answer the user's query based on the provided literature.
-    You must ground all medical advice and statements in the provided literature. You may summarize the literature into easily understandable terms.
-    If the provided literature completely lacks relevant information to answer the core of the question, explicitly state that you do not have enough information to answer definitively.
+    if not feedback: # First pass
+        sys_prompt = """You are an expert medical educator and clinician communicating with the general public.
+        Your goal is to provide a comprehensive, educational, and approachable answer to the user's question.
+        Take an educating role: explain concepts clearly, venture into relevant detail, and ensure the user gets a solid understanding.
+        Draft the response based on your internal knowledge. Do not worry about citing literature yet.
+        If the question is not medical, just respond in a friendly, conversational manner.
+        """
+        response = llm.invoke([SystemMessage(content=sys_prompt), HumanMessage(content=last_user_query)])
+        thoughts = ["✍️ Drafted initial educational response directly using internal knowledge."]
+        return {"draft_response": response.content, "thought_logs": thoughts}
+        
+    else: # Refinement pass
+        literature = "\n\n".join(state.get("gathered_literature", []))
+        sys_prompt = f"""You are a medical author correcting your previous draft based on validation feedback and peer-reviewed literature.
+        
+        FEEDBACK: {feedback}
+        
+        Your task is to rewrite your previous draft to incorporate the feedback:
+        1. Correct or remove any unvalidated claims that contradict or are not found in the literature.
+        2. Where claims are supported by the literature, inject a superscript HTML citation (e.g., <sup>1</sup>, <sup>2</sup>) immediately after it.
+        3. Append a "References" section at the end if citations are used. Do NOT hallucinate PMC IDs. Only use the PMC IDs from the literature provided below.
+        4. Maintain the approachable, educational tone from your original draft.
+        
+        -- GATHERED LITERATURE --
+        {literature}
+        """
+        response = llm.invoke([SystemMessage(content=sys_prompt), HumanMessage(content=f"Previous Draft:\n{state['draft_response']}")])
+        thoughts = ["✏️ Rewrote draft to incorporate feedback and add citations."]
+        return {"draft_response": response.content, "thought_logs": thoughts}
+
+def extract_claims_node(state: AgentState):
+    logger.info("--- EXTRACT CLAIMS NODE ---")
+    draft = state["draft_response"]
     
-    -- GATHERED LITERATURE --
-    {literature}
-    -------------------------
+    sys_prompt = """You are a medical researcher identifying claims to validate.
+    Analyze the provided draft response and extract the core medical facts, treatments, or assertions that need grounding in peer-reviewed literature.
+    Output each distinct concept as a short, keyword-based PubMed Central (PMC) search query on a NEW LINE.
+    Do NOT output full sentences. Use AND/OR operators if helpful.
+    If the draft contains no testable medical claims (e.g., just conversational), output exactly: NONE
+    
+    Example Output:
+    "acute myeloid leukemia" AND ("treatments" OR "therapy")
+    "flu complications" AND "respiratory"
     """
-    response = llm.invoke([SystemMessage(content=sys_prompt), HumanMessage(content=last_user_query)])
-    return {"draft_response": response.content}
+    
+    response = llm.invoke([SystemMessage(content=sys_prompt), HumanMessage(content=f"Draft:\n{draft}")])
+    content = response.content.strip()
+    
+    if content == "NONE" or not content or "NONE" in content.upper():
+        thoughts = ["🧠 Analyzed draft. Decision: No medical claims to validate, skipping PMC search."]
+        return {"extracted_claims": [], "thought_logs": thoughts}
+        
+    queries = [q.strip() for q in content.split("\n") if q.strip()]
+    
+    # Cap slightly so we don't spam PMC
+    queries = queries[:3]
+    thoughts = [f"🔬 Extracted {len(queries)} specific medical queries to validate: {', '.join(queries)}"]
+    
+    return {"extracted_claims": queries, "thought_logs": thoughts}
+
+def retrieve_node(state: AgentState):
+    logger.info("--- RETRIEVE NODE ---")
+    queries = state.get("extracted_claims", [])
+    if not queries:
+        return {"pmc_queries_count": 0, "gathered_literature": []}
+        
+    all_literature = []
+    thoughts = []
+    
+    for q in queries:
+        result_str = search_pmc.invoke({"query": q})
+        all_literature.append(result_str)
+        
+        import re
+        titles = re.findall(r"--- Source: (PMC\d+) \(Title: (.*?)\) ---", result_str)
+        if titles:
+            parsed = ", ".join([f"[{t[0]}] {t[1]}" for t in titles])
+            thoughts.append(f"📚 Retrieved articles for '{q}': {parsed}")
+        else:
+            thoughts.append(f"⚠️ No readable articles found for '{q}'.")
+            
+    return {
+        "pmc_queries_count": len(queries),
+        "gathered_literature": all_literature,
+        "thought_logs": thoughts
+    }
 
 def verify_node(state: AgentState):
-    """Validates that the drafted response is grounded in the literature."""
     logger.info("--- VERIFY NODE ---")
-    
     draft = state["draft_response"]
     literature = "\n\n".join(state.get("gathered_literature", []))
     
-    sys_prompt = f"""You are a strict medical validator.
+    if not state.get("extracted_claims"):
+         # No claims were extracted initially, or it's non-medical
+         thoughts = ["✅ No medical validation required."]
+         return {
+             "validation_feedback": "GROUNDED",
+             "messages": [AIMessage(content=draft)],
+             "thought_logs": thoughts
+         }
+
+    sys_prompt = f"""You are a strict and unforgiving medical validator.
     Evaluate the following DRAFT RESPONSE against the GATHERED LITERATURE.
     Rules:
-    1. Any specific medical advice or clinical statements in the draft MUST be grounded in the gathered literature.
-    2. The draft can summarize concepts found in the literature into layman's terms. 
-    3. If the draft makes up treatments or specific medical facts not found in the text, reject it.
-    
-    Output exactly 'GROUNDED' if it passes.
-    Otherwise, output 'NOT GROUNDED: [Explain what claims are floating/hallucinated]'.
+    1. If the DRAFT RESPONSE already contains citations pointing to valid PMC IDs below and correctly reflects the literature with NO unvalidated claims, output EXACTLY 'GROUNDED'.
+    2. Any specific medical claims in the draft MUST be grounded in the gathered literature.
+    3. If the draft contains unvalidated claims that contradict or are not found in the literature at all, output 'NOT GROUNDED: [Explain which specific claims are invalid or missing from literature]'.
     
     -- GATHERED LITERATURE --
     {literature}
@@ -121,68 +219,74 @@ def verify_node(state: AgentState):
     response = llm.invoke([SystemMessage(content=sys_prompt)])
     content = response.content.strip()
     
-    logger.info(f"Validation result: {content}")
-    
-    if content.startswith("GROUNDED"):
-        return {"messages": [AIMessage(content=draft)]} # Final output to user
+    if "NOT GROUNDED" in content.upper():
+        feedback = content.replace("NOT GROUNDED:", "").strip()
+        if not feedback:
+            feedback = content.replace("NOT GROUNDED", "").strip()
+        thoughts = [f"❌ Validator REJECTED draft: {feedback}"]
+        attempts = state.get("draft_attempts", 0) + 1
+        
+        return_payload = {
+            "validation_feedback": feedback,
+            "draft_attempts": attempts,
+            "thought_logs": thoughts
+        }
+        
+        if attempts >= 3:
+            thoughts.append("⚠️ Max attempts reached. Releasing best-effort draft.")
+            return_payload["messages"] = [AIMessage(content=f"{draft}\n\n*Note: This response could not be fully validated against retrieved literature.*")]
+            
+        return return_payload
     else:
-        # Pass the feedback back as a system message to the drafter
-        feedback = AIMessage(content=f"Your previous draft was rejected by the medical validator. Reason: {content}. Please rewrite the draft to clearly adhere only to the gathered literature, or state you don't know if the literature lacks the details.")
-        return {"messages": [feedback]}
+        thoughts = [f"✅ Validator APPROVED draft."]
+        return {
+            "validation_feedback": "GROUNDED",
+            "messages": [AIMessage(content=draft)],
+            "draft_attempts": state.get("draft_attempts", 0) + 1,
+            "thought_logs": thoughts
+        }
 
-# --- Routing Logic ---
-def route_research(state: AgentState) -> Literal["tools", "draft"]:
-    """Route from researcher to tool node or draft node."""
-    messages = state["messages"]
-    last_message = messages[-1]
+def route_after_draft(state: AgentState) -> str:
+    # If we have feedback, it means we just rewrote the draft based on feedback.
+    # We should directly verify this new draft, bypassing extraction and retrieval.
+    feedback = state.get("validation_feedback")
+    if feedback:
+        return "verify"
+    return "extract"
+
+def route_after_verify(state: AgentState) -> Literal["__end__", "draft"]:
+    attempts = state.get("draft_attempts", 0)
+    feedback = state.get("validation_feedback", "")
     
-    # If the LLM called a tool
-    if hasattr(last_message, "tool_calls") and len(last_message.tool_calls) > 0:
-        if state["pmc_queries_count"] >= 5:
-            logger.warning("Max PMC queries reached (5). Forcing transition to draft.")
-            return "draft"
-        return "tools"
-    
+    if "GROUNDED" in feedback.upper() or attempts >= 3:
+        return "__end__"
     return "draft"
 
-def route_validation(state: AgentState) -> Literal["__end__", "draft"]:
-    """Route from validation to end or back to draft."""
-    messages = state["messages"]
-    last_message = messages[-1]
-    
-    # If the last message is an AI message containing the final drafted response (meaning it passed), end.
-    # The verify_node appends an AIMessage only when 'GROUNDED'. When rejected, it passes feedback but we don't end.
-    if isinstance(last_message, AIMessage) and "rejected by the medical validator" not in last_message.content:
-         return "__end__"
-         
-    return "draft"
-
-# --- Build Graph ---
 def build_agent_graph():
     workflow = StateGraph(AgentState)
     
-    workflow.add_node("researcher", researcher_node)
-    workflow.add_node("tools", tool_executor)
     workflow.add_node("draft", draft_node)
+    workflow.add_node("extract", extract_claims_node)
+    workflow.add_node("retrieve", retrieve_node)
     workflow.add_node("verify", verify_node)
     
-    # Graph entry and topology
-    workflow.set_entry_point("researcher")
+    workflow.set_entry_point("draft")
     
     workflow.add_conditional_edges(
-        "researcher",
-        route_research,
+        "draft",
+        route_after_draft, # If feedback -> verify, else -> extract
         {
-            "tools": "tools",
-            "draft": "draft"
+            "extract": "extract",
+            "verify": "verify"
         }
     )
-    workflow.add_edge("tools", "researcher")
-    workflow.add_edge("draft", "verify")
+    
+    workflow.add_edge("extract", "retrieve")
+    workflow.add_edge("retrieve", "verify")
     
     workflow.add_conditional_edges(
         "verify",
-        route_validation,
+        route_after_verify,
         {
             "draft": "draft",
             "__end__": END
@@ -205,25 +309,41 @@ def generate_agentic_response(history: List[Dict[str, str]]) -> Dict[str, str]:
         elif msg["role"] == "assistant":
             lc_messages.append(AIMessage(content=msg["content"]))
             
+    # Context Window Management: Retain only the last 3 conversational turns (6 messages)
+    if len(lc_messages) > 6:
+        lc_messages = lc_messages[-6:]
+        # Ensure the slice starts with a HumanMessage if we cut halfway through a turn
+        if isinstance(lc_messages[0], AIMessage):
+            lc_messages = lc_messages[1:]
+            
     try:
         final_state = agent_graph.invoke(
             {
                 "messages": lc_messages, 
                 "pmc_queries_count": 0,
+                "draft_response": "",
+                "extracted_claims": [],
+                "validation_feedback": "",
                 "gathered_literature": [],
-                "draft_response": ""
+                "draft_attempts": 0,
+                "thought_logs": []
             }
         )
         # The final state's last message is the approved draft from the verify node
         final_msg = final_state["messages"][-1]
         
+        # Extract thoughts
+        thought_process = final_state.get("thought_logs", [])
+        
         return {
             "response": final_msg.content,
-            "finish_reason": "stop"
+            "finish_reason": "stop",
+            "intermediate_steps": thought_process
         }
     except Exception as e:
         logger.error(f"Agent execution failed: {e}", exc_info=True)
         return {
              "response": f"Sorry, the agentic workflow encountered an internal error: {e}",
-             "finish_reason": "error"
+             "finish_reason": "error",
+             "intermediate_steps": [f"Error occurred: {e}"]
         }

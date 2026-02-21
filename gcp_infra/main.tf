@@ -106,10 +106,12 @@ resource "google_cloud_run_v2_service" "vllm_service" {
       args = [
         "--model", var.model_name,
         "--gpu-memory-utilization", "0.80",
-        "--max-model-len", "4096",
+        "--max-model-len", "8192",
         "--trust-remote-code",
         "--dtype", "bfloat16",
-        "--port", "8080"
+        "--port", "8080",
+        "--enable-auto-tool-choice",
+        "--tool-call-parser", "pythonic"
       ]
 
       env {

@@ -25,6 +25,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     response: str
     finish_reason: str = "unknown"
+    intermediate_steps: List[str] = []
 
 class HealthResponse(BaseModel):
     status: str
@@ -53,7 +54,8 @@ def chat_endpoint(request: ChatRequest):
         result = generate(messages)
         return ChatResponse(
             response=result.get("response", ""),
-            finish_reason=result.get("finish_reason", "unknown")
+            finish_reason=result.get("finish_reason", "unknown"),
+            intermediate_steps=result.get("intermediate_steps", [])
         )
     except HTTPException:
         # Re-raise HTTP exceptions

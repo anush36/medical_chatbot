@@ -19,6 +19,9 @@ langgraph = "^1.0.9"
 langchain = "^1.2.10"
 langchain-openai = "^1.1.10"
 langchain-community = "^0.4.1"
+langchain-chroma = "^1.1.0"
+sentence-transformers = "^5.2.3"
+langchain-huggingface = "^1.2.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.2.2"
