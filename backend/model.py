@@ -8,6 +8,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+from backend.config import config
+
 def generate(messages: List[Dict[str, str]]) -> Dict[str, str]:
     """
     Generate a response for the given list of messages.
@@ -24,7 +26,16 @@ def generate(messages: List[Dict[str, str]]) -> Dict[str, str]:
     """
     try:
         logger.info(f"Generating response for {len(messages)} messages.")
-        result = model_provider.generate(messages)
+        
+        # Route to agentic workflow if configured for OpenAI (or MedGemma when supported)
+        if config.MODEL_PROVIDER in ["openai", "medgemma"]:
+            logger.info("Routing request through LangGraph agent workflow.")
+            from backend.agent import generate_agentic_response
+            result = generate_agentic_response(messages)
+        else:
+            logger.info("Routing request through standard provider workflow.")
+            result = model_provider.generate(messages)
+            
         logger.info(f"Generated response length: {len(result.get('response', ''))}")
         return result
     except Exception as e:

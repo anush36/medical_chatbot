@@ -12,9 +12,13 @@ uvicorn = {extras = ["standard"], version = "^0.29.0"}
 transformers = "^4.41.2"
 accelerate = "^0.30.1"
 streamlit = "^1.35.0"
-openai = "^1.109.1"
+openai = "^2.21.0"
 python-dotenv = "^1.1.1"
 google-auth = "^2.47.0"
+langgraph = "^1.0.9"
+langchain = "^1.2.10"
+langchain-openai = "^1.1.10"
+langchain-community = "^0.4.1"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.2.2"

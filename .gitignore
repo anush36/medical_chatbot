@@ -24,3 +24,6 @@ dmypy.json
 *.tfstate.*
 *.tfstate.backup
 .terraform.lock.hcl
+
+# Logs
+*.log
