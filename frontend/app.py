@@ -53,6 +53,9 @@ for item in st.session_state["messages"]:
     role = item[0]
     content = item[1]
     thoughts = item[2] if len(item) > 2 else []
+    safety_status = item[3] if len(item) > 3 else None
+    validation_status = item[4] if len(item) > 4 else None
+    
     display_role = "assistant" if role == "bot" else role
     with st.chat_message(display_role):
         if isinstance(content, list):
@@ -68,6 +71,12 @@ for item in st.session_state["messages"]:
             with st.expander("Agent Thought Process"):
                 for step in thoughts:
                     st.write(f"- {step}")
+                if safety_status == "SAFE" or validation_status == "GROUNDED":
+                    st.divider()
+                    if safety_status == "SAFE":
+                        st.success("✅ **Safety Check:** Passed (Safe for User)")
+                    if validation_status == "GROUNDED":
+                        st.success("✅ **Medical Validator:** Passed (Claims Grounded in Literature)")
 
 # Chat input with integrated file uploader
 if prompt := st.chat_input("Message the bot...", accept_file=True, file_type=["jpg", "jpeg", "png", "pdf"]):
@@ -134,11 +143,15 @@ if prompt := st.chat_input("Message the bot...", accept_file=True, file_type=["j
                                         for item in st.session_state["messages"]]
                     
                     resp = requests.post("http://localhost:8000/chat", json={"messages": formatted_messages})
+                    safety_status = None
+                    validation_status = None
                     if resp.status_code == 200:
                         data = resp.json()
                         answer = data.get("response", "[No response generated]")
                         finish_reason = data.get("finish_reason", "unknown")
                         intermediate_steps = data.get("intermediate_steps", [])
+                        safety_status = data.get("safety_status")
+                        validation_status = data.get("validation_status")
                         
                         if finish_reason == "length":
                             answer += "\n\n*(⚠️ **Note:** cut off because token limit.)*"
@@ -148,11 +161,19 @@ if prompt := st.chat_input("Message the bot...", accept_file=True, file_type=["j
                 except Exception as e:
                     answer = f"Error: {e}"
                     intermediate_steps = []
+                    safety_status = None
+                    validation_status = None
                 
                 st.markdown(answer, unsafe_allow_html=True)
                 if intermediate_steps:
                     with st.expander("Agent Thought Process"):
                         for step in intermediate_steps:
                             st.write(f"- {step}")
+                        if safety_status == "SAFE" or validation_status == "GROUNDED":
+                            st.divider()
+                            if safety_status == "SAFE":
+                                st.success("✅ **Safety Check:** Passed (Safe for User)")
+                            if validation_status == "GROUNDED":
+                                st.success("✅ **Medical Validator:** Passed (Claims Grounded in Literature)")
                             
-                st.session_state["messages"].append(("assistant", answer, intermediate_steps))
+                st.session_state["messages"].append(("assistant", answer, intermediate_steps, safety_status, validation_status))

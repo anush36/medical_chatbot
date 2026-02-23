@@ -422,12 +422,16 @@ def generate_agentic_response(history: List[Dict[str, str]]) -> Dict[str, str]:
         return {
             "response": final_msg.content,
             "finish_reason": "stop",
-            "intermediate_steps": thought_process
+            "intermediate_steps": thought_process,
+            "safety_status": final_state.get("safety_feedback"),
+            "validation_status": final_state.get("validation_feedback")
         }
     except Exception as e:
         logger.error(f"Agent execution failed: {e}", exc_info=True)
         return {
              "response": f"Sorry, the agentic workflow encountered an internal error: {e}",
              "finish_reason": "error",
-             "intermediate_steps": [f"Error occurred: {e}"]
+             "intermediate_steps": [f"Error occurred: {e}"],
+             "safety_status": None,
+             "validation_status": None
         }

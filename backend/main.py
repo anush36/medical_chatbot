@@ -20,7 +20,7 @@ app = FastAPI(
     version="0.1.0"
 )
 
-from typing import List, Union, Dict, Any
+from typing import List, Union, Dict, Any, Optional
 
 class Message(BaseModel):
     role: str  # "user" or "assistant"
@@ -33,6 +33,8 @@ class ChatResponse(BaseModel):
     response: str
     finish_reason: str = "unknown"
     intermediate_steps: List[str] = []
+    safety_status: Optional[str] = None
+    validation_status: Optional[str] = None
 
 class HealthResponse(BaseModel):
     status: str
@@ -72,7 +74,9 @@ def chat_endpoint(request: ChatRequest):
         return ChatResponse(
             response=result.get("response", ""),
             finish_reason=result.get("finish_reason", "unknown"),
-            intermediate_steps=result.get("intermediate_steps", [])
+            intermediate_steps=result.get("intermediate_steps", []),
+            safety_status=result.get("safety_status"),
+            validation_status=result.get("validation_status")
         )
     except HTTPException:
         # Re-raise HTTP exceptions
