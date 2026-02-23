@@ -7,7 +7,8 @@ import requests
 import base64
 import io
 
-st.title("MedGemma Multi-modal Chat")
+st.title("Vesa Health Assistant")
+st.caption("A verified and safe assistant for answering everyday medical questions.")
 
 if "messages" not in st.session_state:
     st.session_state["messages"] = []

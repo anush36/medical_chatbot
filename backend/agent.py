@@ -93,7 +93,10 @@ llm_kwargs = {
 }
 
 if config.MODEL_PROVIDER != "openai" and config.MEDGEMMA_BASE_URL:
-    llm_kwargs["base_url"] = config.MEDGEMMA_BASE_URL
+    base_url = config.MEDGEMMA_BASE_URL
+    if not base_url.endswith("/v1"):
+        base_url = base_url.rstrip("/") + "/v1"
+    llm_kwargs["base_url"] = base_url
 
 if http_client:
     llm_kwargs["http_client"] = http_client
