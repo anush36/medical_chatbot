@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Anush Agarwal. All rights reserved.
+# This code is proprietary and provided for public review and educational purposes.
+# Unauthorized use, reproduction, or distribution is strictly prohibited.
+
 """OpenAI model provider."""
 from openai import OpenAI
 from .base import ModelProvider
@@ -71,13 +75,19 @@ class OpenAIModelProvider(ModelProvider):
             logger.error(f"Could not fetch GCP ID token (Auth will fail if endpoint expects it): {e}")
             return None
     
-    def generate(self, messages: List[Dict[str, str]]) -> Dict[str, str]:
-        """Generate a response using OpenAI API."""
+    def generate(self, messages: List[Dict[str, any]]) -> Dict[str, str]:
+        """Generate a response using OpenAI API, supporting both text and multimodal content."""
         if not self.is_available():
             return {"response": "[OpenAI API not available - check your API key configuration]", "finish_reason": "error"}
         
         try:
-            openai_messages = [{"role": msg["role"], "content": msg["content"]} for msg in messages]
+            # Prepare messages, ensuring we don't assume 'content' is always a string
+            openai_messages = []
+            for msg in messages:
+                openai_messages.append({
+                    "role": msg["role"],
+                    "content": msg["content"]
+                })
             
             # Prepare arguments
             request_kwargs = {

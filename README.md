@@ -1,5 +1,4 @@
-⚠️ Project Status: Active Prototype (WIP)
-This project is an exploration of deploying open-weights medical models (MedGemma) on serverless infrastructure. It is currently in active development so expect some rough edges.
+⚠️ Project Status: Active Prototype.This project is currently in active development so expect some rough edges. AI assistance was leveraged via Gemini to build this MVP.
 
 # Local LLM Chatbot MVP
 
@@ -7,10 +6,11 @@ A flexible chatbot MVP that supports local models, OpenAI, and **self-hosted Med
 
 ## Features
 
-- **Local Inference:** Run small models (Phi-2) on your own hardware.
-- **OpenAI Support:** Connect to GPT-3.5/4.
-- **MedGemma (Medical AI):** Deploy a private, serverless instance of Google's MedGemma 4B on Cloud Run with GPUs.
-- **Cost Efficient:** The Cloud Run setup scales to zero (costs $0 when not in use).
+- **Multi-modal Capabilities:** Native support for processing and analyzing both images and PDF documents directly through the chat interface.
+- **Agentic RAG Pipeline:** Employs an intelligent multi-agent system that queries PubMed Central (PMC) to ground medical claims in accepted literature.
+- **Safety Agent & Medical Validator:** An integrated safety mechanism ensures the bot differentiates between at-home care and serious conditions requiring professional medical attention.
+- **Flexible Inference:** Run small models locally, connect to OpenAI APIs, or deploy a private MedGemma instance.
+- **Cost Efficient Infrastructure:** The GCP Cloud Run deployment scales to zero (costs $0 when not in use).
 
 ---
 
@@ -152,13 +152,17 @@ Type `yes` to confirm. This removes the GPU service, secrets, and permissions.
 
 ## Architecture
 
-- **Frontend:** Streamlit (Agnostic to backend model).
-- **Backend:** FastAPI with Strategy Pattern for model switching.
+- **Frontend:** Streamlit (Agnostic to backend model, supporting file and image uploads for multimodal functionality).
+- **Backend:** FastAPI with a Strategy Pattern for model switching and LangChain for multi-agent capabilities.
 
 **Providers:**
 
 - `LocalModelProvider`: HuggingFace Transformers.
 - `OpenAIModelProvider`: Works for both OpenAI and vLLM (MedGemma).
+
+**Agent System:**
+- **RAG Pipeline:** Semantic chunking and retrieval using an in-memory Chroma vector store, augmenting inference with relevant PubMed Central open-access articles.
+- **Safety & Validation:** Validates responses to avoid giving harmful advice, enforcing safety rules strictly.
 
 **Infrastructure:**
 

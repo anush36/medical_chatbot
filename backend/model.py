@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Anush Agarwal. All rights reserved.
+# This code is proprietary and provided for public review and educational purposes.
+# Unauthorized use, reproduction, or distribution is strictly prohibited.
+
 """
 Model interface for the chat backend.
 This module provides a unified interface for different model providers.

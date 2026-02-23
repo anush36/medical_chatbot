@@ -22,6 +22,9 @@ langchain-community = "^0.4.1"
 langchain-chroma = "^1.1.0"
 sentence-transformers = "^5.2.3"
 langchain-huggingface = "^1.2.0"
+pymupdf = "^1.27.1"
+fpdf2 = "^2.8.6"
+python-multipart = "^0.0.22"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.2.2"

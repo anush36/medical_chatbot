@@ -1,3 +1,7 @@
+# Copyright (c) 2026 Anush Agarwal. All rights reserved.
+# This code is proprietary and provided for public review and educational purposes.
+# Unauthorized use, reproduction, or distribution is strictly prohibited.
+
 import logging
 import operator
 from typing import Annotated, TypedDict, Sequence, Literal, List, Dict
@@ -19,6 +23,7 @@ class AgentState(TypedDict):
     draft_response: str
     extracted_claims: List[str]
     validation_feedback: str
+    safety_feedback: str
     gathered_literature: Annotated[List[str], operator.add]
     draft_attempts: int
     thought_logs: Annotated[List[str], operator.add]
@@ -100,24 +105,33 @@ def draft_node(state: AgentState):
     user_msgs = [m for m in state["messages"] if isinstance(m, HumanMessage)]
     last_user_query = user_msgs[-1].content if user_msgs else "No query found."
     
-    feedback = state.get("validation_feedback")
+    val_feedback = state.get("validation_feedback", "")
+    safety_feedback = state.get("safety_feedback", "")
     
-    if not feedback: # First pass
-        sys_prompt = """You are an expert medical educator and clinician communicating with the general public.
-        Your goal is to provide a comprehensive, educational, and approachable answer to the user's question.
-        Take an educating role: explain concepts clearly, venture into relevant detail, and ensure the user gets a solid understanding.
-        Draft the response based on your internal knowledge. Do not worry about citing literature yet.
-        If the question is not medical, just respond in a friendly, conversational manner.
-        """
-        response = llm.invoke([SystemMessage(content=sys_prompt), HumanMessage(content=last_user_query)])
-        thoughts = ["✍️ Drafted initial educational response directly using internal knowledge."]
-        return {"draft_response": response.content, "thought_logs": thoughts}
+    if "UNSAFE" in safety_feedback.upper(): # Refinement for safety
+        literature = "\n\n".join(state.get("gathered_literature", []))
+        sys_prompt = f"""You are a medical author correcting your previous draft based on a safety evaluation.
         
-    else: # Refinement pass
+        SAFETY FEEDBACK: {safety_feedback}
+        
+        Your task is to rewrite your previous draft to incorporate the safety feedback:
+        1. Remove or modify any advice that the safety feedback identified as potentially harmful.
+        2. Where claims are supported by the literature, inject a superscript HTML citation (e.g., <sup>1</sup>, <sup>2</sup>) immediately after it.
+        3. Append a "References" section at the end if citations are used. Do NOT hallucinate PMC IDs. Only use the PMC IDs from the literature provided below.
+        4. Maintain the approachable, educational tone from your original draft.
+        
+        -- GATHERED LITERATURE --
+        {literature}
+        """
+        response = llm.invoke([SystemMessage(content=sys_prompt), HumanMessage(content=f"Previous Draft:\n{state['draft_response']}")])
+        thoughts = ["✏️ Rewrote draft to incorporate safety feedback."]
+        return {"draft_response": response.content, "thought_logs": thoughts}
+
+    elif val_feedback and "GROUNDED" not in val_feedback.upper(): # Refinement pass for validation
         literature = "\n\n".join(state.get("gathered_literature", []))
         sys_prompt = f"""You are a medical author correcting your previous draft based on validation feedback and peer-reviewed literature.
         
-        FEEDBACK: {feedback}
+        FEEDBACK: {val_feedback}
         
         Your task is to rewrite your previous draft to incorporate the feedback:
         1. Correct or remove any unvalidated claims that contradict or are not found in the literature.
@@ -131,6 +145,60 @@ def draft_node(state: AgentState):
         response = llm.invoke([SystemMessage(content=sys_prompt), HumanMessage(content=f"Previous Draft:\n{state['draft_response']}")])
         thoughts = ["✏️ Rewrote draft to incorporate feedback and add citations."]
         return {"draft_response": response.content, "thought_logs": thoughts}
+        
+    else: # First pass
+        sys_prompt = """You are an expert medical educator and clinician communicating with the general public.
+        Your goal is to provide a comprehensive, educational, and approachable answer to the user's question.
+        Take an educating role: explain concepts clearly, venture into relevant detail, and ensure the user gets a solid understanding.
+        Draft the response based on your internal knowledge. Do not worry about citing literature yet.
+        If the question is not medical, just respond in a friendly, conversational manner.
+        """
+        response = llm.invoke([SystemMessage(content=sys_prompt), HumanMessage(content=last_user_query)])
+        thoughts = ["✍️ Drafted initial educational response directly using internal knowledge."]
+        return {"draft_response": response.content, "thought_logs": thoughts}
+
+def safety_node(state: AgentState):
+    logger.info("--- SAFETY NODE ---")
+    draft = state["draft_response"]
+    
+    sys_prompt = """You are a medical safety agent. Your priority is to ensure the response provided to the user does not indicate anything that is likely to cause the user or others harm.
+    
+    For example, if someone says they have a deep splinter and it needs to be digged out, the response should tell them to go to a doctor, NOT to try to dig it out at home.
+    However, there is nuance: if someone has a shallow splinter, it is ok to suggest carefully removing it at home.
+    This applies to all medical advice: do not tell the user to do something that could cause them harm.
+    
+    Evaluate the following DRAFT RESPONSE.
+    Rules:
+    1. If the draft constitutes safe advice or is simply informational and does not pose a safety risk, output EXACTLY 'SAFE'.
+    2. If the draft contains harmful advice, output 'UNSAFE: [Explain exactly what the harmful advice is and how it should be corrected]'.
+    """
+    
+    response = llm.invoke([SystemMessage(content=sys_prompt), HumanMessage(content=f"DRAFT RESPONSE:\n{draft}")])
+    content = response.content.strip()
+    
+    if "UNSAFE" in content.upper():
+        feedback = content.replace("UNSAFE:", "").strip()
+        if not feedback:
+            feedback = content.replace("UNSAFE", "").strip()
+        thoughts = [f"🛑 Safety checker REJECTED draft: {feedback}"]
+        
+        attempts = state.get("draft_attempts", 0) + 1
+        return_payload = {
+            "safety_feedback": f"UNSAFE: {feedback}",
+            "thought_logs": thoughts,
+            "draft_attempts": attempts
+        }
+        if attempts >= 3:
+            thoughts.append("⚠️ Max attempts reached in safety check. Releasing best-effort draft with a safety warning.")
+            return_payload["messages"] = [AIMessage(content=f"{draft}\n\n*Note: This response could not be fully verified for safety.*")]
+            
+        return return_payload
+    else:
+        thoughts = ["Safety checker APPROVED draft - claims and advice does not pose safety risk"]
+        return {
+            "safety_feedback": "SAFE",
+            "thought_logs": thoughts
+        }
 
 def extract_claims_node(state: AgentState):
     logger.info("--- EXTRACT CLAIMS NODE ---")
@@ -238,7 +306,7 @@ def verify_node(state: AgentState):
             
         return return_payload
     else:
-        thoughts = [f"✅ Validator APPROVED draft."]
+        thoughts = ["Medical validator APPROVED draft - all claims are supported by retrieved literature"]
         return {
             "validation_feedback": "GROUNDED",
             "messages": [AIMessage(content=draft)],
@@ -246,11 +314,17 @@ def verify_node(state: AgentState):
             "thought_logs": thoughts
         }
 
-def route_after_draft(state: AgentState) -> str:
-    # If we have feedback, it means we just rewrote the draft based on feedback.
-    # We should directly verify this new draft, bypassing extraction and retrieval.
-    feedback = state.get("validation_feedback")
-    if feedback:
+def route_after_safety(state: AgentState) -> str:
+    safety_feedback = state.get("safety_feedback", "")
+    attempts = state.get("draft_attempts", 0)
+    
+    if "UNSAFE" in safety_feedback.upper():
+        if attempts >= 3:
+            return "__end__"
+        return "draft"
+        
+    val_feedback = state.get("validation_feedback", "")
+    if val_feedback and "GROUNDED" not in val_feedback.upper():
         return "verify"
     return "extract"
 
@@ -266,18 +340,23 @@ def build_agent_graph():
     workflow = StateGraph(AgentState)
     
     workflow.add_node("draft", draft_node)
+    workflow.add_node("safety", safety_node)
     workflow.add_node("extract", extract_claims_node)
     workflow.add_node("retrieve", retrieve_node)
     workflow.add_node("verify", verify_node)
     
     workflow.set_entry_point("draft")
     
+    workflow.add_edge("draft", "safety")
+    
     workflow.add_conditional_edges(
-        "draft",
-        route_after_draft, # If feedback -> verify, else -> extract
+        "safety",
+        route_after_safety,
         {
+            "draft": "draft",
             "extract": "extract",
-            "verify": "verify"
+            "verify": "verify",
+            "__end__": END
         }
     )
     
@@ -304,10 +383,11 @@ def generate_agentic_response(history: List[Dict[str, str]]) -> Dict[str, str]:
     # Convert dict history to Langchain Messages
     lc_messages = []
     for msg in history:
+        content = msg["content"]
         if msg["role"] == "user":
-            lc_messages.append(HumanMessage(content=msg["content"]))
+            lc_messages.append(HumanMessage(content=content))
         elif msg["role"] == "assistant":
-            lc_messages.append(AIMessage(content=msg["content"]))
+            lc_messages.append(AIMessage(content=content))
             
     # Context Window Management: Retain only the last 3 conversational turns (6 messages)
     if len(lc_messages) > 6:
@@ -324,6 +404,7 @@ def generate_agentic_response(history: List[Dict[str, str]]) -> Dict[str, str]:
                 "draft_response": "",
                 "extracted_claims": [],
                 "validation_feedback": "",
+                "safety_feedback": "",
                 "gathered_literature": [],
                 "draft_attempts": 0,
                 "thought_logs": []
