@@ -1,8 +1,13 @@
-⚠️ Project Status: Active Prototype.This project is currently in active development so expect some rough edges. AI assistance was leveraged via Gemini to build this MVP.
+⚠️ Project Status: Active Prototype. This project is currently in active development so expect some rough edges. AI assistance was leveraged via Gemini to build this MVP.
 
 # Local LLM Chatbot MVP
 
 A flexible chatbot MVP that supports local models, OpenAI, and **self-hosted MedGemma on Google Cloud**.
+Developed as part of a kaggle submission for the MedGemma Hackathon. 
+
+See my demo video below:
+
+[![Watch the video](https://img.youtube.com/vi/6mbtwW7GwVs/0.jpg)](https://youtu.be/6mbtwW7GwVs?si=Qm7XkWAMbD-u2OY2)
 
 ## Features
 
