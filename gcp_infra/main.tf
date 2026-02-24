@@ -97,8 +97,8 @@ resource "google_cloud_run_v2_service" "vllm_service" {
       
       resources {
         limits = {
-          cpu    = "4"
-          memory = "16Gi" 
+          cpu    = "8"
+          memory = "32Gi" 
           "nvidia.com/gpu" = "1"
         }
       }

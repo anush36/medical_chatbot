@@ -153,7 +153,7 @@ def draft_node(state: AgentState):
         sys_prompt = """You are an expert medical educator and clinician communicating with the general public.
         Your goal is to provide a comprehensive, educational, and approachable answer to the user's question.
         Take an educating role: explain concepts clearly, venture into relevant detail, and ensure the user gets a solid understanding.
-        Draft the response based on your internal knowledge. Do not worry about citing literature yet.
+        Draft the response based on your internal knowledge. Do not worry about citing literature yet. Prefereably keep the response below 500 words.
         If the question is not medical, just respond in a friendly, conversational manner.
         """
         response = llm.invoke([SystemMessage(content=sys_prompt), HumanMessage(content=last_user_query)])
@@ -242,17 +242,30 @@ def retrieve_node(state: AgentState):
     all_literature = []
     thoughts = []
     
-    for q in queries:
-        result_str = search_pmc.invoke({"query": q})
-        all_literature.append(result_str)
-        
-        import re
-        titles = re.findall(r"--- Source: (PMC\d+) \(Title: (.*?)\) ---", result_str)
-        if titles:
-            parsed = ", ".join([f"[{t[0]}] {t[1]}" for t in titles])
-            thoughts.append(f"📚 Retrieved articles for '{q}': {parsed}")
-        else:
-            thoughts.append(f"⚠️ No readable articles found for '{q}'.")
+    import concurrent.futures
+    import re
+
+    def _execute_search(q):
+        try:
+            result_str = search_pmc.invoke({"query": q})
+            titles = re.findall(r"--- Source: (PMC\d+) \(Title: (.*?)\) ---", result_str)
+            if titles:
+                parsed = ", ".join([f"[{t[0]}] {t[1]}" for t in titles])
+                msg = f"📚 Retrieved articles for '{q}': {parsed}"
+            else:
+                msg = f"⚠️ No readable articles found for '{q}'."
+            return result_str, msg
+        except Exception as e:
+            logger.error(f"Error fetching for query '{q}': {e}", exc_info=True)
+            return "", f"⚠️ Error fetching articles for '{q}'."
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(queries), 5)) as executor:
+        futures = [executor.submit(_execute_search, q) for q in queries]
+        for future in futures:
+            result_str, msg = future.result()
+            if result_str:
+                all_literature.append(result_str)
+            thoughts.append(msg)
             
     return {
         "pmc_queries_count": len(queries),
@@ -264,8 +277,9 @@ def verify_node(state: AgentState):
     logger.info("--- VERIFY NODE ---")
     draft = state["draft_response"]
     literature = "\n\n".join(state.get("gathered_literature", []))
+    claims = state.get("extracted_claims", [])
     
-    if not state.get("extracted_claims"):
+    if not claims:
          # No claims were extracted initially, or it's non-medical
          thoughts = ["✅ No medical validation required."]
          return {
@@ -274,31 +288,47 @@ def verify_node(state: AgentState):
              "thought_logs": thoughts
          }
 
-    sys_prompt = f"""You are a strict and unforgiving medical validator.
-    Evaluate the following DRAFT RESPONSE against the GATHERED LITERATURE.
-    Rules:
-    1. If the DRAFT RESPONSE already contains citations pointing to valid PMC IDs below and correctly reflects the literature with NO unvalidated claims, output EXACTLY 'GROUNDED'.
-    2. Any specific medical claims in the draft MUST be grounded in the gathered literature.
-    3. If the draft contains unvalidated claims that contradict or are not found in the literature at all, output 'NOT GROUNDED: [Explain which specific claims are invalid or missing from literature]'.
-    
-    -- GATHERED LITERATURE --
-    {literature}
-    
-    -- DRAFT RESPONSE --
-    {draft}
-    """
-    response = llm.invoke([SystemMessage(content=sys_prompt)])
-    content = response.content.strip()
-    
-    if "NOT GROUNDED" in content.upper():
-        feedback = content.replace("NOT GROUNDED:", "").strip()
-        if not feedback:
-            feedback = content.replace("NOT GROUNDED", "").strip()
-        thoughts = [f"❌ Validator REJECTED draft: {feedback}"]
+    import concurrent.futures
+
+    def _verify_claim(claim: str) -> str:
+        sys_prompt = f"""You are a strict and unforgiving medical validator.
+        Evaluate the following DRAFT RESPONSE against the GATHERED LITERATURE specifically for the claim regarding: **{claim}**
+        Rules:
+        1. If the DRAFT RESPONSE already contains citations pointing to valid PMC IDs below and correctly reflects the literature with NO unvalidated issues for this claim, output EXACTLY 'GROUNDED'.
+        2. This specific medical claim in the draft MUST be grounded in the gathered literature.
+        3. If the draft contains unvalidated information for this claim that contradicts or is not found in the literature at all, output 'NOT GROUNDED: [Explain which specific parts of this claim are invalid or missing]'.
+        
+        -- GATHERED LITERATURE --
+        {literature}
+        
+        -- DRAFT RESPONSE --
+        {draft}
+        """
+        response = llm.bind(max_tokens=50).invoke([SystemMessage(content=sys_prompt)])
+        return response.content.strip()
+
+    feedbacks = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(claims), 5)) as executor:
+        futures = {executor.submit(_verify_claim, claim): claim for claim in claims}
+        for future in concurrent.futures.as_completed(futures):
+            feedbacks.append(future.result())
+            
+    # Compile the results
+    failed_feedbacks = []
+    for f in feedbacks:
+        if "NOT GROUNDED" in f.upper():
+            failed_feedbacks.append(f.replace("NOT GROUNDED:", "").strip())
+            
+    if failed_feedbacks:
+        combined_feedback = " & ".join([f for f in failed_feedbacks if f])
+        if not combined_feedback:
+            combined_feedback = "One or more claims were NOT GROUNDED."
+            
+        thoughts = [f"❌ Validator REJECTED draft: {combined_feedback}"]
         attempts = state.get("draft_attempts", 0) + 1
         
         return_payload = {
-            "validation_feedback": feedback,
+            "validation_feedback": combined_feedback,
             "draft_attempts": attempts,
             "thought_logs": thoughts
         }
@@ -309,7 +339,7 @@ def verify_node(state: AgentState):
             
         return return_payload
     else:
-        thoughts = ["Medical validator APPROVED draft - all claims are supported by retrieved literature"]
+        thoughts = [f"✅ Medical validator APPROVED draft - all {len(claims)} claims are supported by retrieved literature"]
         return {
             "validation_feedback": "GROUNDED",
             "messages": [AIMessage(content=draft)],

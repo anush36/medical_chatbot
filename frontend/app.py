@@ -7,6 +7,22 @@ import requests
 import base64
 import io
 
+st.set_page_config(page_title="Vesa Health", page_icon="✨", layout="centered")
+
+# Hide Streamlit header, footer, and menu to make it feel like a modern web app
+hide_st_style = """
+            <style>
+            #MainMenu {visibility: hidden;}
+            footer {visibility: hidden;}
+            header {visibility: hidden;}
+            .block-container {
+                padding-top: 1rem;
+                padding-bottom: 2rem;
+            }
+            </style>
+            """
+st.markdown(hide_st_style, unsafe_allow_html=True)
+
 st.title("Vesa Health Assistant")
 st.caption("A verified and safe assistant for answering everyday medical questions.")
 

@@ -1,0 +1,7 @@
+[theme]
+base="dark"
+primaryColor="#6366f1" # Indigo primary color for a modern feel
+backgroundColor="#0f172a" # Slate 900 background
+secondaryBackgroundColor="#1e293b" # Slate 800 for sidebars/chat bubbles
+textColor="#f8fafc" # Slate 50 text
+font="sans serif"

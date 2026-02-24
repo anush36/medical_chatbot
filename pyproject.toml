@@ -25,6 +25,7 @@ langchain-huggingface = "^1.2.0"
 pymupdf = "^1.27.1"
 fpdf2 = "^2.8.6"
 python-multipart = "^0.0.22"
+diagrams = "^0.25.1"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.2.2"

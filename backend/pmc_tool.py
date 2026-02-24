@@ -22,11 +22,17 @@ BIOC_BASE_URL = "https://www.ncbi.nlm.nih.gov/research/bionlp/RESTful/pmcoa.cgi/
 # Lazy load so it doesn't block startup but is cached after the first time
 _embeddings_cache = None
 
+import threading
+_embeddings_lock = threading.Lock()
+
 def get_embeddings():
     global _embeddings_cache
     if _embeddings_cache is None:
-        logger.info("Initializing HuggingFaceEmbeddings...")
-        _embeddings_cache = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+        with _embeddings_lock:
+            # Check again inside the lock in case another thread initialized it while we waited
+            if _embeddings_cache is None:
+                logger.info("Initializing HuggingFaceEmbeddings...")
+                _embeddings_cache = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
     return _embeddings_cache
 
 
@@ -125,8 +131,8 @@ def search_pmc(query: str) -> str:
     """
     logger.info(f"Tool call: search_pmc with query '{query}'")
     
-    # We fetch fewer full articles (top 4) to keep API calls fast, but extract deeper into them
-    pmcids = get_pmcids_from_query(query, max_results=4)
+    # We fetch fewer full articles (top 2) to keep API calls fast, but extract deeper into them
+    pmcids = get_pmcids_from_query(query, max_results=2)
     if not pmcids:
         return f"No articles found for query: {query}"
         
@@ -168,12 +174,20 @@ def search_pmc(query: str) -> str:
     # Using a fast, lightweight local embedding model loaded globally
     embeddings = get_embeddings()
     
-    # Create temporary in-memory chroma store
-    vectorstore = Chroma.from_documents(chunks, embeddings)
-    
-    # Retrieve top k most relevant chunks (e.g. 5 chunks * 800 chars = ~4000 chars total)
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
-    top_chunks = retriever.invoke(query)
+    # Chroma's SQLite client is notoriously not thread-safe.
+    # We must lock the initialization and retrieval
+    import threading
+    global _chroma_lock
+    if '_chroma_lock' not in globals():
+        _chroma_lock = threading.Lock()
+        
+    with _chroma_lock:
+        # Create temporary in-memory chroma store
+        vectorstore = Chroma.from_documents(chunks, embeddings)
+        
+        # Retrieve top k most relevant chunks (e.g. 2 chunks * 800 chars = ~1600 chars total)
+        retriever = vectorstore.as_retriever(search_kwargs={"k": 2})
+        top_chunks = retriever.invoke(query)
     
     # 4. Format Output
     combined_texts = []
