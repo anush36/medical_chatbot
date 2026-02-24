@@ -27,6 +27,7 @@ class Config:
     MEDGEMMA_BASE_URL: str = os.getenv("MEDGEMMA_BASE_URL", "")
     MEDGEMMA_API_KEY: str = os.getenv("MEDGEMMA_API_KEY", "fake-key") # vLLM often needs a non-empty key
     MEDGEMMA_MODEL: str = os.getenv("MEDGEMMA_MODEL", "google/medgemma-4b-it")
+    MEDGEMMA_MAX_TOKENS: int = int(os.getenv("MEDGEMMA_MAX_TOKENS", "4096"))
 
     # Local model configuration
     LOCAL_MODEL_NAME: str = os.getenv("LOCAL_MODEL_NAME", "microsoft/phi-2")

@@ -48,6 +48,27 @@ def generate(messages: List[Dict[str, str]]) -> Dict[str, str]:
         # which will return a proper HTTP 500 error.
         raise
 
+def generate_stream(messages: List[Dict[str, str]]):
+    """Generate a streaming response (yielding strings)."""
+    try:
+        logger.info(f"Generating streaming response for {len(messages)} messages.")
+        if config.MODEL_PROVIDER in ["openai", "medgemma"]:
+            from backend.agent import generate_agentic_response_stream
+            yield from generate_agentic_response_stream(messages)
+        else:
+            # Fallback to sync local for now if stream not supported
+            import json
+            result = model_provider.generate(messages)
+            yield json.dumps({
+                "type": "final",
+                "response": result.get("response", ""),
+                "finish_reason": result.get("finish_reason", "stop")
+            }) + "\n"
+    except Exception as e:
+        logger.error(f"Error during stream generation: {e}", exc_info=True)
+        import json
+        yield json.dumps({"type": "error", "content": f"Model error: {e}"}) + "\n"
+
 def is_model_available() -> bool:
     """
     Check if the current model provider is available and ready to use.

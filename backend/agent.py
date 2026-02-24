@@ -88,7 +88,7 @@ if config.MODEL_PROVIDER != "openai" and config.MEDGEMMA_BASE_URL and "run.app" 
 llm_kwargs = {
     "api_key": config.OPENAI_API_KEY if config.MODEL_PROVIDER == "openai" else config.MEDGEMMA_API_KEY,
     "model": config.OPENAI_MODEL if config.MODEL_PROVIDER == "openai" else config.MEDGEMMA_MODEL,
-    "max_tokens": config.OPENAI_MAX_TOKENS,
+    "max_tokens": config.OPENAI_MAX_TOKENS if config.MODEL_PROVIDER == "openai" else config.MEDGEMMA_MAX_TOKENS,
     "temperature": config.OPENAI_TEMPERATURE,
 }
 
@@ -380,9 +380,66 @@ def build_agent_graph():
 # Global compiled graph
 agent_graph = build_agent_graph()
 
-def generate_agentic_response(history: List[Dict[str, str]]) -> Dict[str, str]:
-    """Execute the agent graph given a message history."""
+import json
+
+def generate_agentic_response_stream(history: List[Dict[str, str]]):
+    """Execute the agent graph given a message history and stream updates."""
     
+    # Convert dict history to Langchain Messages
+    lc_messages = []
+    for msg in history:
+        content = msg["content"]
+        if msg["role"] == "user":
+            lc_messages.append(HumanMessage(content=content))
+        elif msg["role"] == "assistant":
+            lc_messages.append(AIMessage(content=content))
+            
+    # Context Window Management: Retain only the last 3 conversational turns (6 messages)
+    if len(lc_messages) > 6:
+        lc_messages = lc_messages[-6:]
+        # Ensure the slice starts with a HumanMessage if we cut halfway through a turn
+        if isinstance(lc_messages[0], AIMessage):
+            lc_messages = lc_messages[1:]
+            
+    try:
+        initial_state = {
+            "messages": lc_messages, 
+            "pmc_queries_count": 0,
+            "draft_response": "",
+            "extracted_claims": [],
+            "validation_feedback": "",
+            "safety_feedback": "",
+            "gathered_literature": [],
+            "draft_attempts": 0,
+            "thought_logs": []
+        }
+        
+        # Stream the graph execution
+        final_state = initial_state
+        for event in agent_graph.stream(initial_state):
+            # event is a dict of {node_name: {node_state_updates}}
+            for node, state_update in event.items():
+                final_state.update(state_update)
+                if "thought_logs" in state_update and state_update["thought_logs"]:
+                    for thought in state_update["thought_logs"]:
+                        yield json.dumps({"type": "thought", "content": thought}) + "\n"
+        
+        # After streaming is complete, yield the final response
+        if "messages" in final_state and final_state["messages"]:
+            final_msg = final_state["messages"][-1]
+            yield json.dumps({
+                "type": "final",
+                "response": final_msg.content,
+                "finish_reason": "stop",
+                "safety_status": final_state.get("safety_feedback"),
+                "validation_status": final_state.get("validation_feedback")
+            }) + "\n"
+    except Exception as e:
+        logger.error(f"Agent execution failed during stream: {e}", exc_info=True)
+        yield json.dumps({"type": "error", "content": f"Sorry, the agentic workflow encountered an internal error: {e}"}) + "\n"
+
+def generate_agentic_response(history: List[Dict[str, str]]) -> Dict[str, str]:
+    """Execute the agent graph given a message history (Sync version)."""
     # Convert dict history to Langchain Messages
     lc_messages = []
     for msg in history:

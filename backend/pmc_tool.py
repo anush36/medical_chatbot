@@ -18,6 +18,18 @@ logger = logging.getLogger(__name__)
 EUTILS_BASE_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 BIOC_BASE_URL = "https://www.ncbi.nlm.nih.gov/research/bionlp/RESTful/pmcoa.cgi/BioC_json"
 
+# Global embeddings model
+# Lazy load so it doesn't block startup but is cached after the first time
+_embeddings_cache = None
+
+def get_embeddings():
+    global _embeddings_cache
+    if _embeddings_cache is None:
+        logger.info("Initializing HuggingFaceEmbeddings...")
+        _embeddings_cache = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    return _embeddings_cache
+
+
 def get_pmcids_from_query(query: str, max_results: int = 15) -> List[str]:
     """Search PMC using E-utilities and return a list of PMCIDs."""
     search_url = f"{EUTILS_BASE_URL}/esearch.fcgi"
@@ -120,16 +132,26 @@ def search_pmc(query: str) -> str:
         
     docs = []
     
-    # 1. Fetch full text and create Document objects
-    for pmcid in pmcids:
-        content = get_bioc_content(pmcid)
-        if content and content.get("text"):
-            title = content.get("title", "Unknown Title")
-            docs.append(Document(
-                page_content=content["text"],
-                metadata={"source": pmcid, "title": title}
-            ))
-            
+    # 1. Fetch full text and create Document objects concurrently
+    import concurrent.futures
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(pmcids), 4)) as executor:
+        # Submit all tasks
+        future_to_pmcid = {executor.submit(get_bioc_content, pmcid): pmcid for pmcid in pmcids}
+        
+        for future in concurrent.futures.as_completed(future_to_pmcid):
+            pmcid = future_to_pmcid[future]
+            try:
+                content = future.result()
+                if content and content.get("text"):
+                    title = content.get("title", "Unknown Title")
+                    docs.append(Document(
+                        page_content=content["text"],
+                        metadata={"source": pmcid, "title": title}
+                    ))
+            except Exception as exc:
+                logger.error(f"{pmcid} generated an exception: {exc}")
+                
     if not docs:
         return f"Found articles for '{query}' but could not extract readable text."
 
@@ -143,8 +165,8 @@ def search_pmc(query: str) -> str:
     logger.info(f"Split {len(docs)} articles into {len(chunks)} chunks.")
 
     # 3. Ephemeral Vector Search
-    # Using a fast, lightweight local embedding model
-    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    # Using a fast, lightweight local embedding model loaded globally
+    embeddings = get_embeddings()
     
     # Create temporary in-memory chroma store
     vectorstore = Chroma.from_documents(chunks, embeddings)

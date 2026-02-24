@@ -60,7 +60,9 @@ async def parse_pdf_endpoint(file: UploadFile = File(...)):
     except Exception as e:
         logger.error(f"Error in parse-pdf endpoint: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to parse PDF: {str(e)}")
-@app.post("/chat", response_model=ChatResponse)
+from fastapi.responses import StreamingResponse
+
+@app.post("/chat")
 def chat_endpoint(request: ChatRequest):
     """Chat endpoint that generates responses using the configured model provider."""
     try:
@@ -70,13 +72,12 @@ def chat_endpoint(request: ChatRequest):
                 detail=f"Model provider '{config.MODEL_PROVIDER}' is not available. Check your configuration."
             )
         messages = [msg.dict() for msg in request.messages]
-        result = generate(messages)
-        return ChatResponse(
-            response=result.get("response", ""),
-            finish_reason=result.get("finish_reason", "unknown"),
-            intermediate_steps=result.get("intermediate_steps", []),
-            safety_status=result.get("safety_status"),
-            validation_status=result.get("validation_status")
+        
+        # We will stream the response back using Server-Sent Events (SSE)
+        from backend.model import generate_stream
+        return StreamingResponse(
+            generate_stream(messages), 
+            media_type="application/x-ndjson"
         )
     except HTTPException:
         # Re-raise HTTP exceptions

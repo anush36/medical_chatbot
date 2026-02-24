@@ -21,6 +21,7 @@ class OpenAIModelProvider(ModelProvider):
         self.max_tokens = max_tokens
         self.temperature = temperature
         self._client = None
+        self._gcp_token_cache = {"token": None, "expires_at": 0}
         self._initialize_client()
     
     def _initialize_client(self):
@@ -39,20 +40,31 @@ class OpenAIModelProvider(ModelProvider):
             logger.error(f"Failed to initialize client: {e}")
 
     def _get_gcp_token(self) -> Optional[str]:
-        """Fetch Google ID token if running against Cloud Run."""
+        """Fetch Google ID token if running against Cloud Run. Caches token to avoid repeated slow fetches."""
+        import time
+        current_time = time.time()
+        
+        # Check cache first
+        if "token" in self._gcp_token_cache and self._gcp_token_cache["expires_at"] > current_time:
+            return self._gcp_token_cache["token"]
+            
         try:
             import google.auth
             from google.auth.transport.requests import Request
             from google.oauth2 import id_token
             
-            # The 'audience' must match the service URL exactly (e.g., https://service-abc.a.run.app)
-            target_audience = self.base_url.split("/v1")[0] if "/v1" in self.base_url else self.base_url
-            
+            if self.base_url:
+                target_audience = self.base_url.split("/v1")[0] if "/v1" in self.base_url else self.base_url
+            else:
+                target_audience = ""
+                
             try:
                 # 1. Try standard GCP method (works when deployed on Cloud Run / Compute Engine)
                 req = Request()
                 token = id_token.fetch_id_token(req, target_audience)
                 if token:
+                    self._gcp_token_cache["token"] = token
+                    self._gcp_token_cache["expires_at"] = current_time + 3000 # Cache for 50 mins
                     return token
             except Exception as e:
                 logger.debug(f"Direct ID token fetch failed (expected if running locally): {e}")
@@ -66,7 +78,10 @@ class OpenAIModelProvider(ModelProvider):
                 text=True,
                 check=True
             )
-            return result.stdout.strip()
+            token = result.stdout.strip()
+            self._gcp_token_cache["token"] = token
+            self._gcp_token_cache["expires_at"] = current_time + 3000 # Cache for 50 mins
+            return token
             
         except ImportError:
             logger.warning("google-auth library not found. Cannot auto-authenticate with Cloud Run.")

@@ -137,43 +137,74 @@ if prompt := st.chat_input("Message the bot...", accept_file=True, file_type=["j
                     st.caption(f"📎 Attached PDF: {uploaded_file.name}")
             
         with st.chat_message("assistant"):
+            answer_placeholder = st.empty()
+            thoughts_container = st.empty()
+            thoughts_expander = None
+            
             with st.spinner("Thinking..."):
                 try:
                     formatted_messages = [{"role": "assistant" if item[0] == "bot" else item[0], "content": item[1]} 
                                         for item in st.session_state["messages"]]
                     
-                    resp = requests.post("http://localhost:8000/chat", json={"messages": formatted_messages})
-                    safety_status = None
-                    validation_status = None
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        answer = data.get("response", "[No response generated]")
-                        finish_reason = data.get("finish_reason", "unknown")
-                        intermediate_steps = data.get("intermediate_steps", [])
-                        safety_status = data.get("safety_status")
-                        validation_status = data.get("validation_status")
-                        
-                        if finish_reason == "length":
-                            answer += "\n\n*(⚠️ **Note:** cut off because token limit.)*"
-                    else:
-                        answer = f"Error: {resp.text}"
-                        intermediate_steps = []
-                except Exception as e:
-                    answer = f"Error: {e}"
+                    import json
+                    resp = requests.post("http://localhost:8000/chat", json={"messages": formatted_messages}, stream=True)
+                    
+                    answer = ""
                     intermediate_steps = []
                     safety_status = None
                     validation_status = None
+                    
+                    if resp.status_code == 200:
+                        for line in resp.iter_lines():
+                            if line:
+                                try:
+                                    data = json.loads(line.decode('utf-8'))
+                                    
+                                    if data.get("type") == "thought":
+                                        intermediate_steps.append(data["content"])
+                                        # Render the expander dynamically as thoughts come in
+                                        with thoughts_container.container():
+                                            with st.expander("Agent Thought Process", expanded=True):
+                                                for step in intermediate_steps:
+                                                    st.write(f"- {step}")
+                                    
+                                    elif data.get("type") == "final":
+                                        answer = data.get("response", "[No response generated]")
+                                        finish_reason = data.get("finish_reason", "unknown")
+                                        safety_status = data.get("safety_status")
+                                        validation_status = data.get("validation_status")
+                                        
+                                        if finish_reason == "length":
+                                            answer += "\n\n*(⚠️ **Note:** cut off because token limit.)*"
+                                            
+                                        # Render the full text chunk once we get it
+                                        # We don't have token streaming right now, but we stream the 'thoughts' live
+                                        answer_placeholder.markdown(answer, unsafe_allow_html=True)
+                                        
+                                        # Re-render thoughts to include statuses at the bottom
+                                        with thoughts_container.container():
+                                            with st.expander("Agent Thought Process", expanded=False):
+                                                for step in intermediate_steps:
+                                                    st.write(f"- {step}")
+                                                if safety_status == "SAFE" or validation_status == "GROUNDED":
+                                                    st.divider()
+                                                    if safety_status == "SAFE":
+                                                        st.success("✅ **Safety Check:** Passed (Safe for User)")
+                                                    if validation_status == "GROUNDED":
+                                                        st.success("✅ **Medical Validator:** Passed (Claims Grounded in Literature)")
+                                        
+                                    elif data.get("type") == "error":
+                                        answer = f"Error: {data.get('content', 'Unknown error')}"
+                                        answer_placeholder.error(answer)
+                                except json.JSONDecodeError as e:
+                                    logger.error(f"Error decoding chunk: {line} - {e}")
+                    else:
+                        answer = f"Error: {resp.text}"
+                        answer_placeholder.error(answer)
+                        
+                except Exception as e:
+                    answer = f"Error: {e}"
+                    answer_placeholder.error(answer)
                 
-                st.markdown(answer, unsafe_allow_html=True)
-                if intermediate_steps:
-                    with st.expander("Agent Thought Process"):
-                        for step in intermediate_steps:
-                            st.write(f"- {step}")
-                        if safety_status == "SAFE" or validation_status == "GROUNDED":
-                            st.divider()
-                            if safety_status == "SAFE":
-                                st.success("✅ **Safety Check:** Passed (Safe for User)")
-                            if validation_status == "GROUNDED":
-                                st.success("✅ **Medical Validator:** Passed (Claims Grounded in Literature)")
-                            
+                # Append to history so it persists
                 st.session_state["messages"].append(("assistant", answer, intermediate_steps, safety_status, validation_status))
